@@ -141,7 +141,38 @@ def freeze_bn(module):
 
 def load_params_from_file(model, filename, device, dist_mode, logger, strict=True):
     checkpoint = torch.load(filename, map_location=device)
-    pretrained_state_dict = checkpoint['model_state']
+    
+    # Handle different checkpoint formats
+    if isinstance(checkpoint, dict):
+        # Try different common key names for model state dict
+        if 'model_state' in checkpoint:
+            pretrained_state_dict = checkpoint['model_state']
+        elif 'state_dict' in checkpoint:
+            pretrained_state_dict = checkpoint['state_dict']
+        elif 'model' in checkpoint:
+            pretrained_state_dict = checkpoint['model']
+        else:
+            # Check if checkpoint itself is a state_dict (all values are tensors)
+            # or if it's a dict with state_dict-like structure
+            sample_key = next(iter(checkpoint.keys()))
+            if isinstance(checkpoint[sample_key], torch.Tensor):
+                # The checkpoint itself appears to be a state_dict
+                pretrained_state_dict = checkpoint
+            else:
+                # Print available keys to help debug
+                available_keys = list(checkpoint.keys())
+                error_msg = (f"Checkpoint file '{filename}' does not contain expected keys. "
+                           f"Available keys: {available_keys}. "
+                           f"Expected one of: 'model_state', 'state_dict', 'model', or direct state_dict.")
+                if logger:
+                    logger.error(error_msg)
+                else:
+                    print(error_msg)
+                raise KeyError(error_msg)
+    else:
+        # Checkpoint is directly a state_dict
+        pretrained_state_dict = checkpoint
+    
     tmp_model = model.module if dist_mode else model
     state_dict = tmp_model.state_dict()
 
@@ -156,7 +187,7 @@ def load_params_from_file(model, filename, device, dist_mode, logger, strict=Tru
     for key in state_dict:
         if key not in update_state_dict:
             unupdate_state_dict[key] = state_dict[key]
-
+            
     if strict:
         tmp_model.load_state_dict(update_state_dict)
     else:

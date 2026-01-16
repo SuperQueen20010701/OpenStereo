@@ -17,7 +17,6 @@ from stereo.utils.clip_grad import ClipGrad
 from stereo.utils.lamb import Lamb
 from stereo.evaluation.metric_per_image import epe_metric, d1_metric, threshold_metric
 
-
 class TrainerTemplate:
     def __init__(self, args, cfgs, local_rank, global_rank, logger, tb_writer, model):
         self.args = args
@@ -26,12 +25,18 @@ class TrainerTemplate:
         self.global_rank = global_rank
         self.logger = logger
         self.tb_writer = tb_writer
-
+        #构建模型
         self.model = self.build_model(model)
 
-        if self.args.run_mode in ['train', 'eval']:
+        # 只在评估模式或有评估数据配置时构建评估数据加载器
+        if self.args.run_mode == 'eval':
             self.eval_set, self.eval_loader, self.eval_sampler = self.build_eval_loader()
-
+        elif self.args.run_mode == 'train' and self._has_eval_data():
+            self.eval_set, self.eval_loader, self.eval_sampler = self.build_eval_loader()
+        else:
+            self.eval_set, self.eval_loader, self.eval_sampler = None, None, None
+        
+        # 构建训练的loader
         if self.args.run_mode == 'train':
             self.train_set, self.train_loader, self.train_sampler = self.build_train_loader()
 
@@ -52,6 +57,16 @@ class TrainerTemplate:
 
             self.warmup_scheduler = self.build_warmup()
             self.clip_gard = self.build_clip_grad()
+
+    def _has_eval_data(self):
+        """检查配置中是否有评估数据"""
+        if not hasattr(self.cfgs, 'DATA_CONFIG') or not hasattr(self.cfgs.DATA_CONFIG, 'DATA_INFOS'):
+            return False
+        for data_info in self.cfgs.DATA_CONFIG.DATA_INFOS:
+            if hasattr(data_info, 'DATA_SPLIT') and isinstance(data_info.DATA_SPLIT, dict):
+                if 'EVALUATING' in data_info.DATA_SPLIT and data_info.DATA_SPLIT['EVALUATING'] is not None:
+                    return True
+        return False
 
     def build_train_loader(self):
         train_set, train_loader, train_sampler = build_dataloader(
@@ -76,12 +91,13 @@ class TrainerTemplate:
         return eval_set, eval_loader, eval_sampler
 
     def build_model(self, model):
+        # 冻结model的bach normalization层
         if self.cfgs.OPTIMIZATION.get('FREEZE_BN', False):
-            model = common_utils.freeze_bn(model)  # 冻结model的bach normalization层
+            model = common_utils.freeze_bn(model)  
             self.logger.info('Freeze the batch normalization layers')
-
+        # 分布式训练 每一层的分布在多个GPU实现统一
         if self.cfgs.OPTIMIZATION.SYNC_BN and self.args.dist_mode:
-            model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)  # 分布式GPU计算全局的mean and covariance
+            model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)  
             self.logger.info('Convert batch norm to sync batch norm')
         model = model.to(self.local_rank)
 
@@ -168,6 +184,9 @@ class TrainerTemplate:
             self.warmup_scheduler.lrs = [group['lr'] for group in self.optimizer.param_groups]
 
     def evaluate(self, current_epoch):
+        # 如果没有评估数据，跳过评估
+        if self.eval_loader is None:
+            return
         self.model.eval()
         self.eval_one_epoch(current_epoch=current_epoch)
         if self.args.dist_mode:

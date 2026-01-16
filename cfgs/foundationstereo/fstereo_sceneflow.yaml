@@ -6,6 +6,7 @@ DATA_CONFIG:
                 EVALUATING: ./data/SceneFlow/sceneflow_finalpass_test.txt,
                 TESTING: ./data/SceneFlow/sceneflow_finalpass_test.txt
             }
+            DATA_PATH: /DATA/disk0/zhaobojun/scene_flow_data
             RETURN_RIGHT_DISP: false
 
     DATA_TRANSFORM:
@@ -40,7 +41,7 @@ MODEL:
     FIND_UNUSED_PARAMETERS: true
     CKPT: -1
     # FoundationStereo pretrained model path
-    PRETRAINED_MODEL: '/DATA/disk0/zhaobojun/foundationstereo_model/pretrained_models/23-51-11'
+    PRETRAINED_MODEL: '/DATA/disk0/zhaobojun/foundationstereo_model/pretrained_models/23-51-11/model_best_bp2.pth'
     
     # DA3 Feature Backbone Configuration
     use_da3: true  # Enable DA3 feature backbone

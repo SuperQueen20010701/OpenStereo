@@ -9,6 +9,12 @@ import torch.utils.data as torch_data
 from pathlib import Path
 from .dataset_template import build_transform_by_cfg
 
+import logging
+# logger
+logger = logging.getLogger('export')
+logging.basicConfig(level=logging.DEBUG, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 
 def depth_uint8_decoding(depth_uint8, scale=1000):
     depth_uint8 = depth_uint8.astype(float)
@@ -19,19 +25,37 @@ def depth_uint8_decoding(depth_uint8, scale=1000):
 class FoundationStereoDataset(torch_data.Dataset):
     def __init__(self, data_info, data_cfg, mode):
         super().__init__()
-        self.data_info = data_info
-        self.data_cfg = data_cfg
-        self.mode = mode
-        self.root = self.data_info.DATA_PATH
-
+        self.data_info = data_info # DATA_INFOS
+        self.data_cfg = data_cfg  # DATA_CONFIG
+        self.mode = mode # training / evaluating / testing
+        self.root = self.data_info.DATA_PATH if hasattr(self.data_info, 'DATA_PATH') else '/DATA/disk0/zhaobojun/workspace_ws/src/OpenStereo_ws/src/OpenStereo'  # 数据集根目录
+        logger.info(f'FoundationStereoDataset root path: {self.root}')
         self.data_list = []
         if self.mode.upper() in self.data_info.DATA_SPLIT:
-            transform_config = self.data_cfg.DATA_TRANSFORM[self.mode.upper()]
+            transform_config = self.data_cfg.DATA_TRANSFORM[self.mode.upper()]  # 数据预处理和数据增强的配置
             self.transform = build_transform_by_cfg(transform_config)
             data_dirs = glob.glob(os.path.join(self.root, '*/dataset/data/'))
-            for each_data_dir in data_dirs:
-                left_images = glob.glob(os.path.join(each_data_dir, 'left/rgb/*.jpg'))
-                self._append_sample(left_images)
+            logger.info(f'Found {len(data_dirs)} sub-datasets with pattern root/*/dataset/data/')
+            
+            # 兼容根目录直接包含 dataset/data 的情况
+            direct_dir = os.path.join(self.root, 'dataset/data')
+            if os.path.isdir(direct_dir):
+                if direct_dir not in data_dirs:  # 避免重复添加
+                    data_dirs.append(direct_dir)
+                logger.info(f'Found direct dataset directory: {direct_dir}')
+            
+            if len(data_dirs) == 0:
+                logger.warning(f'No data directories found in {self.root}. '
+                             f'Expected either root/*/dataset/data/ or root/dataset/data/')
+            else:
+                logger.info(f'Total data directories found: {len(data_dirs)}')
+                for each_data_dir in data_dirs:
+                    logger.info(f'Scanning data directory: {each_data_dir}')
+                    left_images = glob.glob(os.path.join(each_data_dir, 'left/rgb/*.jpg'))
+                    logger.info(f'Found {len(left_images)} left images in {each_data_dir}')
+                    self._append_sample(left_images)
+            
+            logger.info(f'Total samples loaded: {len(self.data_list)}')
         else:
             self.transform = None
 

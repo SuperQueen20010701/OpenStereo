@@ -60,6 +60,11 @@ def build_dataloader(data_cfg, batch_size, is_dist, workers, pin_memory, mode):
         all_dataset.append(dataset)
     dataset = torch.utils.data.ConcatDataset(all_dataset)
 
+    # Check if dataset is empty
+    if len(dataset) == 0:
+        raise ValueError(f"Dataset is empty (0 samples). Please check your data configuration for mode='{mode}'. "
+                         f"Ensure DATA_INFOS contains valid dataset configurations with data paths.")
+
     shuffle = True if mode=='training' else False
     if is_dist:
         sampler = DistributedSampler(dataset, shuffle=shuffle)

@@ -5,12 +5,12 @@ DATA_CONFIG:
                 TRAINING: None,  # 直接读取文件夹
             }
             RETURN_SUPER_PIXEL: true
-
+            DATA_PATH: /DATA/disk0/zhaobojun/foundationstereo_sample_data/manipulation_v5_realistic_kitchen_2500_1
     DATA_TRANSFORM:
         TRAINING:
             - { NAME: StereoColorJitter, BRIGHTNESS: [ 0.6, 1.4 ], CONTRAST: [ 0.6, 1.4 ], SATURATION: [ 0.6, 1.4 ], HUE: [-0.5, 0.5], ASYMMETRIC_PROB: 0.2 }
             - { NAME: RandomErase, PROB: 0.5, MAX_TIME: 2, BOUNDS: [ 50, 100 ] }
-            - { NAME: RandomCrop, SIZE: [ 320, 736 ], Y_JITTER: false }
+            - { NAME: RandomCrop, SIZE: [ 288, 640 ], Y_JITTER: false }  # Reduced size to save memory
             - { NAME: TransposeImage }
             - { NAME: ToTensor }
             - { NAME: NormalizeImage, MEAN: [ 0.485, 0.456, 0.406 ], STD: [ 0.229, 0.224, 0.225 ] }
@@ -20,7 +20,7 @@ MODEL:
     corr_levels: 2
     corr_radius: 4
     hidden_dims: [ 128, 128, 128 ]
-    low_memory: 0
+    low_memory: 1  # Enable low memory mode to reduce GPU memory usage
     max_disp: 416
     mixed_precision: true
     n_downsample: 2
@@ -30,13 +30,25 @@ MODEL:
     valid_iters: 32
     FIND_UNUSED_PARAMETERS: true
     CKPT: -1
-    PRETRAINED_MODEL: '/file_system/vepfs/algorithm/ruilin.wang/code/LightStereoX/output/v2/Foundation.pt'
+    PRETRAINED_MODEL: '/DATA/disk0/zhaobojun/foundationstereo_model/pretrained_models/23-51-11/model_best_bp2.pth'
+
+    # DA3 Feature Backbone Configuration
+    use_da3: true  # Enable DA3 feature backbone
+    da3_model_dir: '/DATA/disk0/zhaobojun/depthanything_model/DA3MONO-LARGE'  # DA3 pretrained model directory
+    da3_trainable: false  # Whether to train DA3 backbone (false means frozen)
+    da3_allow_pad_to_divisible: true  # Allow padding to satisfy patch size requirements
+    ref_view_strategy: 'saddle_balanced'  # DA3 reference view strategy
+    process_res: 448  # Processing resolution for DA3 (reduced from 504 to save memory)
+    process_res_method: 'upper_bound_resize'  # Resize method for DA3
+    edgenext_pretrained: true  # Whether to use pretrained EdgeNeXt for Feature_da3
+    divider: 16  # Divider for DA3 feature map size
+
 
 OPTIMIZATION:
     FREEZE_BN: false
     SYNC_BN: true
     AMP: true
-    BATCH_SIZE_PER_GPU: 2
+    BATCH_SIZE_PER_GPU: 1  # Reduced from 2 to 1 to avoid OOM
     NUM_EPOCHS: 1
 
     OPTIMIZER:

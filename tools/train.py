@@ -100,7 +100,7 @@ def main():
     # logger
     log_file = os.path.join(args.output_dir, 'train_{}_{}.log'.format(datetime.datetime.now().strftime('%Y%m%d-%H%M%S'), group_rank))
     logger = common_utils.create_logger(log_file, rank=local_rank)
-    tb_writer = SummaryWriter(log_dir=os.path.join(args.output_dir, 'tensorboard')) if global_rank == 0 else None
+    tb_writer = SummaryWriter(log_dir=os.path.join(args.output_dir, 'tensorboard')) if global_rank == 0 else None  # save the main process logger
     for key, val in vars(args).items():
         logger.info('{:16} {}'.format(key, val))
     common_utils.log_configs(cfgs, logger=logger)

@@ -18,7 +18,7 @@ DATA_PATH_DICT = {
     'VirtualKitti2Dataset': '/file_system/vepfs/public_data/stereo/virtualkitti2',
     'UnrealStereo4KDataset': '/file_system/vepfs/public_data/stereo/UnrealStereo4K',
     'CarlaDataset': '/file_system/vepfs/public_data/stereo/StereoFromCarlaV2',
-    'FoundationStereoDataset': '/file_system/vepfs/public_data/stereo/foundationstereo',
+    'FoundationStereoDataset': '/DATA/disk0/zhaobojun/foundationstereo_sample_data/manipulation_v5_realistic_kitchen_2500_1',
     'DynamicReplicaDataset': '/file_system/vepfs/public_data/stereo/dynamic_stereo',
     'MonoDataset': '/file_system/vepfs/public_data/depthAnythingData',
     'RealfillDataset': '/file_system/vepfs/public_data/depthAnythingData',
