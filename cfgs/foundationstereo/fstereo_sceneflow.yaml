@@ -25,6 +25,7 @@ DATA_CONFIG:
 
 MODEL:
     NAME: FoundationStereo
+    # FoundationStereo core parameters
     corr_levels: 2
     corr_radius: 4
     hidden_dims: [ 128, 128, 128 ]
@@ -33,12 +34,24 @@ MODEL:
     mixed_precision: true
     n_downsample: 2
     n_gru_layers: 3
-    vit_size: 'vitl'
+    vit_size: 'vitl'  # Only used when use_da3=False
     train_iters: 22
     valid_iters: 32
     FIND_UNUSED_PARAMETERS: true
     CKPT: -1
-    PRETRAINED_MODEL: ''
+    # FoundationStereo pretrained model path
+    PRETRAINED_MODEL: '/DATA/disk0/zhaobojun/foundationstereo_model/pretrained_models/23-51-11'
+    
+    # DA3 Feature Backbone Configuration
+    use_da3: true  # Enable DA3 feature backbone
+    da3_model_dir: '/DATA/disk0/zhaobojun/depthanything_model/DA3MONO-LARGE'  # DA3 pretrained model directory
+    da3_trainable: false  # Whether to train DA3 backbone (false means frozen)
+    da3_allow_pad_to_divisible: true  # Allow padding to satisfy patch size requirements
+    ref_view_strategy: 'saddle_balanced'  # DA3 reference view strategy
+    process_res: 504  # Processing resolution for DA3
+    process_res_method: 'upper_bound_resize'  # Resize method for DA3
+    edgenext_pretrained: true  # Whether to use pretrained EdgeNeXt for Feature_da3
+    divider: 16  # Divider for DA3 feature map size
 
 OPTIMIZATION:
     FREEZE_BN: false

@@ -47,12 +47,13 @@ class Trainer(TrainerTemplate):
             # ===== Begin: check if loss is NaN =====
             # 1. 本地检查loss是否为NaN/inf
             is_invalid = torch.isnan(loss) | torch.isinf(loss)
-            # 转为0/1张量（0=有效，1=无效），用于进程间通信
-            invalid_flag = torch.tensor([1], dtype=torch.int, device=loss.device) if is_invalid else torch.tensor(
-                [0], dtype=torch.int, device=loss.device)
-            # 2. 全局同步：所有进程交换无效标记, 确保所有进程都知道是否有任何进程的loss无效
-            dist.all_reduce(invalid_flag, op=dist.ReduceOp.SUM)
-            global_invalid = invalid_flag.item() > 0  # 只要有一个进程无效，全局标记为True
+            global_invalid = bool(is_invalid)
+            if dist.is_available() and dist.is_initialized():
+                # 转为0/1张量（0=有效，1=无效），用于进程间通信
+                invalid_flag = torch.tensor([1 if global_invalid else 0], dtype=torch.int, device=loss.device)
+                # 2. 全局同步：所有进程交换无效标记, 确保所有进程都知道是否有任何进程的loss无效
+                dist.all_reduce(invalid_flag, op=dist.ReduceOp.SUM)
+                global_invalid = invalid_flag.item() > 0  # 只要有一个进程无效，全局标记为True
             # 3. 所有进程同步决策
             if global_invalid:
                 print('loss have nan/inf, continue~')

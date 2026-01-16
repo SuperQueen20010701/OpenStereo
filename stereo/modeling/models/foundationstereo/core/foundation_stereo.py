@@ -13,14 +13,28 @@ import torch.nn.functional as F
 import sys,os
 code_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(f'{code_dir}/../')
-from stereo.modeling.models.foundationstereo.core.update import *
-from stereo.modeling.models.foundationstereo.core.extractor import *
+from stereo.modeling.models.foundationstereo.core.update import BasicSelectiveMultiUpdateBlock
+from stereo.modeling.models.foundationstereo.core.extractor import ContextNetDino, Feature
 from stereo.modeling.models.foundationstereo.core.geometry import Combined_Geo_Encoding_Volume
-from stereo.modeling.models.foundationstereo.core.submodule import *
-from stereo.modeling.models.foundationstereo.core.utils.utils import *
+from stereo.modeling.models.foundationstereo.core.submodule import (
+    BasicConv, Conv3dNormActReduced, CostVolumeDisparityAttention, FeatureAtt,
+    SpatialAttentionExtractor, ChannelAttentionEnhancement, BasicConv_IN, Conv2x,
+    ResnetBasicBlock3D, build_gwc_volume, build_concat_volume, disparity_regression,
+    context_upsample
+)
+from stereo.modeling.models.foundationstereo.core.extractor_da3 import Feature_da3
+from stereo.modeling.models.foundationstereo.core.utils.utils import InputPadder
 from stereo.modeling.models.foundationstereo.Utils import *
-import time,huggingface_hub
-
+import logging
+import time
+from typing import Tuple, List, Dict, Optional
+import math
+try:
+    import huggingface_hub
+    _HubMixinBase = huggingface_hub.PyTorchModelHubMixin
+except Exception:
+    _HubMixinBase = object
+    logging.warning("[WARRING] [FoundationStereo] huggingface_hub import not available.")
 
 try:
     autocast = torch.cuda.amp.autocast
@@ -38,8 +52,10 @@ def normalize_image(img):
     '''
     @img: (B,C,H,W) in range 0-255, RGB order
     '''
-    tf = torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], inplace=False)
-    return tf(img/255.0).contiguous()
+    img = (img.float() / 255.0).contiguous()
+    mean = img.new_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1) # img new_tensor确保在同一个设备上
+    std = img.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+    return ((img - mean) / std).contiguous()  # 计算tensor 的归一化
 
 
 class hourglass(nn.Module):
@@ -122,9 +138,7 @@ class hourglass(nn.Module):
 
         return conv
 
-
-
-class FoundationStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
+class FoundationStereo(nn.Module, _HubMixinBase):
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -140,8 +154,12 @@ class FoundationStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         self.cam = ChannelAttentionEnhancement(self.args.hidden_dims[0])
 
         self.context_zqr_convs = nn.ModuleList([nn.Conv2d(context_dims[i], args.hidden_dims[i]*3, kernel_size=3, padding=3//2) for i in range(self.args.n_gru_layers)])
+        
+        # Support both DA3 and original Feature backbones
+        self.use_da3 = bool(getattr(args, 'use_da3', False))
+        self.feature = Feature_da3(args) if self.use_da3 else Feature(args)
 
-        self.feature = Feature(args)
+        self.patch_size = self.feature.patch_size
         self.proj_cmb = nn.Conv2d(self.feature.d_out[0], 12, kernel_size=1, padding=0)
 
         self.stem_2 = nn.Sequential(
@@ -180,17 +198,15 @@ class FoundationStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         dx = torch.linspace(-r, r, 2*r+1, requires_grad=False).reshape(1, 1, 2*r+1, 1)
         self.dx = dx
 
-
     def upsample_disp(self, disp, mask_feat_4, stem_2x):
 
-        with autocast(enabled=self.args.mixed_precision):
+        with torch.amp.autocast('cuda', enabled=self.args.mixed_precision):
             xspx = self.spx_2_gru(mask_feat_4, stem_2x)   # 1/2 resolution
             spx_pred = self.spx_gru(xspx)
             spx_pred = F.softmax(spx_pred, 1)
             up_disp = context_upsample(disp*4., spx_pred).unsqueeze(1)
 
         return up_disp.float()
-
 
     def forward(self, data):
         image1 = data['left']
@@ -202,8 +218,7 @@ class FoundationStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         """ Estimate disparity between pair of frames """
         B = len(image1)
         low_memory = low_memory or (self.args.get('low_memory', False))
-        # image1 = normalize_image(image1)
-        # image2 = normalize_image(image2)
+                
         with autocast(enabled=self.args.mixed_precision):
             out, vit_feat = self.feature(torch.cat([image1, image2], dim=0))
             vit_feat = vit_feat[:B]
@@ -309,8 +324,11 @@ class FoundationStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         disp_preds = model_pred['disp_preds']
         n_predictions = len(disp_preds)
         assert n_predictions >= 1
-        for i in range(n_predictions):
+        if n_predictions == 1:
+            adjusted_loss_gamma = loss_gamma
+        else:
             adjusted_loss_gamma = loss_gamma ** (15 / (n_predictions - 1))
+        for i in range(n_predictions):
             i_weight = adjusted_loss_gamma ** (n_predictions - i - 1)
             i_loss = (disp_preds[i][valid.bool()] - disp_gt[valid.bool()]).abs()
             # assert i_loss.shape == valid.shape, [i_loss.shape, valid.shape, disp_gt.shape, disp_preds[i].shape]

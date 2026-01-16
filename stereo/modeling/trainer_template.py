@@ -77,18 +77,18 @@ class TrainerTemplate:
 
     def build_model(self, model):
         if self.cfgs.OPTIMIZATION.get('FREEZE_BN', False):
-            model = common_utils.freeze_bn(model)
+            model = common_utils.freeze_bn(model)  # 冻结model的bach normalization层
             self.logger.info('Freeze the batch normalization layers')
 
         if self.cfgs.OPTIMIZATION.SYNC_BN and self.args.dist_mode:
-            model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+            model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)  # 分布式GPU计算全局的mean and covariance
             self.logger.info('Convert batch norm to sync batch norm')
         model = model.to(self.local_rank)
 
         if self.args.dist_mode:
             model = nn.parallel.DistributedDataParallel(
                 model, device_ids=[self.local_rank], output_device=self.local_rank,
-                find_unused_parameters=self.cfgs.MODEL.FIND_UNUSED_PARAMETERS)
+                find_unused_parameters=self.cfgs.MODEL.FIND_UNUSED_PARAMETERS)  # 模型分布式训练
 
         # load pretrained model
         if self.cfgs.MODEL.PRETRAINED_MODEL:
