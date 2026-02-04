@@ -7,6 +7,7 @@ import cv2
 from torchvision.transforms.functional import normalize
 from PIL import Image
 from torchvision.transforms import ColorJitter
+from stereo.datasets.camera_geometry import CameraGeometryAugmentation
 
 
 class Compose(object):
@@ -386,3 +387,14 @@ class NormalizeToMinusOneOne(object):
         sample['left'] = (2.0 * (img1 / 255.0) - 1.0).contiguous()
         sample['right'] = (2.0 * (img2 / 255.0) - 1.0).contiguous()
         return sample
+
+class CameraGeometryAugmentation(CameraGeometryAugmentation):
+    def __init__(self, config):
+        f_range = getattr(config, 'F_RANGE', (700, 1400))
+        baseline_range = getattr(config, 'BASELINE_RANGE', (0.1, 1.2))
+        cx_jitter = getattr(config, 'CX_JITTER', 10.0)
+        cy_jitter = getattr(config, 'CY_JITTER', 10.0)
+        canonical_f = getattr(config, 'CANONICAL_F', 1050.0)
+        canonical_baseline = getattr(config, 'CANONICAL_BASELINE', 0.54)
+        eps = getattr(config, 'EPS', 1e-6)
+        super().__init__(f_range, baseline_range, cx_jitter, cy_jitter, canonical_f, canonical_baseline, eps)

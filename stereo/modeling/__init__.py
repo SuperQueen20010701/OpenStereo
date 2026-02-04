@@ -15,6 +15,7 @@ from .models.lightstereo.trainer import Trainer as LightStereoTrainer
 from .models.stereobase.trainer import Trainer as StereoBaseGRUTrainer
 # from .models.iinet.trainer import Trainer as IINetTrainer
 from .models.monster.trainer import Trainer as MonsterTrainer
+from .models.omnistereo.trainer import Trainer as OmniStereoTrainer
 
 
 try:
@@ -46,6 +47,7 @@ __all__ = {
     'LightStereo': LightStereoTrainer,
     'StereoBaseGRU': StereoBaseGRUTrainer,
     'FoundationStereo': FoundationStereoTrainer,
+    'OmniStereo': OmniStereoTrainer,
     # 'IInet': IINetTrainer,
     # 'NMRF': NMRFTrainer
     "MonSter": MonsterTrainer
