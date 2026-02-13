@@ -6,18 +6,23 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
-
-import torch,pdb,os,sys
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import torch
+import sys
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from einops import rearrange
 from torch import einsum
 code_dir = os.path.dirname(os.path.realpath(__file__))
+import logging
 sys.path.append(f'{code_dir}/../')
 from Utils import *
 from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
+torch.cuda.empty_cache()
 
+logger = logging.getLogger("submodule")
 
 def _is_contiguous(tensor: torch.Tensor) -> bool:
     if torch.jit.is_scripting():
@@ -150,7 +155,7 @@ class ResnetBasicBlock(nn.Module):
 
     if self.downsample is not None:
       identity = self.downsample(x)
-    out += identity
+    out += identity # 输入维度一致时，才能直接相加
     out = self.relu(out)
 
     return out
@@ -195,6 +200,39 @@ class ResnetBasicBlock3D(nn.Module):
     return out
 
 
+def attn_qkv(Q, K, V, window_size=(-1,-1)):
+    """
+    author: Qian Zhou
+    This function is to support both SDPA and FlashAttention based on input dtype.
+    if input dtype is fp32, it will use SDPA; otherwise, it will use FlashAttention.
+    Q, K, V: (B, L, H, D)
+    window_size: (win_h, win_w)
+    """
+    # ---- branch: fp32 -> SDPA, else -> flash_attn_func ----
+    if Q.dtype == torch.float32 and K.dtype == torch.float32 and V.dtype == torch.float32:
+        if window_size != (-1, -1):
+            raise NotImplementedError(f"SDPA only supports window_size=(-1,-1), but got window_size = {window_size}")
+        
+        # SDPA expects (B, H, L, D)
+        q = Q.permute(0, 2, 1, 3)  # (B,H,L,D)
+        k = K.permute(0, 2, 1, 3)
+        v = V.permute(0, 2, 1, 3)
+
+        attn = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=False
+        )  # (B,H,L,D)
+
+        # back to (B, L, H, D)
+        attn_output = attn.permute(0, 2, 1, 3).contiguous()
+    else:
+        # FlashAttention path (expects (B, L, H, D))
+        attn_output = flash_attn_func(Q, K, V, window_size=window_size)  # Replace with actual FlashAttention function
+    return attn_output
+
+
 class FlashMultiheadAttention(nn.Module):
     def __init__(self, embed_dim, num_heads):
         super().__init__()
@@ -220,8 +258,8 @@ class FlashMultiheadAttention(nn.Module):
         Q = Q.view(Q.size(0), Q.size(1), self.num_heads, self.head_dim)
         K = K.view(K.size(0), K.size(1), self.num_heads, self.head_dim)
         V = V.view(V.size(0), V.size(1), self.num_heads, self.head_dim)
-
-        attn_output = flash_attn_func(Q, K, V, window_size=window_size)  # Replace with actual FlashAttention function
+        
+        attn_output = attn_qkv(Q, K, V, window_size=window_size)  # fp32, fp16, and bf16 supported
 
         attn_output = attn_output.reshape(B,L,-1)
         output = self.out_proj(attn_output)
@@ -415,11 +453,12 @@ def build_gwc_volume(refimg_fea, targetimg_fea, maxdisp, num_groups, stride=1):
 
 def build_concat_volume(refimg_fea, targetimg_fea, maxdisp):
     B, C, H, W = refimg_fea.shape
+    # logger.info(f"[submodule] [build_concat_volume] refimg_fea shape: {refimg_fea.shape}, targetimg_fea shape: {targetimg_fea.shape}")
     volume = refimg_fea.new_zeros([B, 2 * C, maxdisp, H, W])
     for i in range(maxdisp):
         if i > 0:
             volume[:, :C, i, :, :] = refimg_fea[:, :, :, :]
-            volume[:, C:, i, :, i:] = targetimg_fea[:, :, :, :-i]
+            volume[:, C:, i, :, i:] = targetimg_fea[:, :, :, :-i] # xl-xr = d
         else:
             volume[:, :C, i, :, :] = refimg_fea
             volume[:, C:, i, :, :] = targetimg_fea
@@ -450,7 +489,7 @@ class FeatureAtt(nn.Module):
         @feat: (B,C,H,W)
         '''
         feat_att = self.feat_att(feat).unsqueeze(2)   #(B,C,1,H,W)
-        cv = torch.sigmoid(feat_att)*cv
+        cv = torch.sigmoid(feat_att)*cv # sigmoid执行门控权重，对于 cv的代价体特征
         return cv
 
 def context_upsample(disp_low, up_weights):

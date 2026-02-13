@@ -1,7 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import logging
 
+logger =logging.getLogger("loss")
 from core.geometry import (
     compute_rays_batch,
     make_pixel_grid,
@@ -147,12 +149,21 @@ class GeometryStereoLoss(nn.Module):
             disp_gt.unsqueeze(1), rays_L, cam_L, cam_R, pixel_grid
         )
 
-        reproj_loss = (
-            offset_pred - offset_gt
-        ).abs()
-
-        reproj_loss = reproj_loss[valid.expand_as(reproj_loss)].mean()
-
+        diff = (offset_pred - offset_gt).float()
+        reproj_loss = F.smooth_l1_loss(diff, torch.zeros_like(diff), reduction="none", beta=1.0)  # [B,H,W,2]
+        #valid gt cost volume 
+        valid_original = valid.clone()  # [B,1,H,W]
+        valid = valid.squeeze(1) #[B,H,W]
+        valid = valid.unsqueeze(-1) # [B,H,W,1]
+        valid_expanded = valid.expand_as(reproj_loss)  # [B,H,W,2]
+        reproj_loss = reproj_loss[valid_expanded]
+        
+        reproj_loss = reproj_loss.mean()
+        
+        if torch.isnan(reproj_loss) or torch.isinf(reproj_loss):
+            logger.error(f"[GeometryStereoLoss] [Forward] reproj_loss is NaN/Inf! valid value: {reproj_loss.item()}")
+        else:
+            logger.info(f"[GeometryStereoLoss] [Forward] valid reproj_loss final: {reproj_loss.item():.6f}")
         # -------------------------------
         # Optional 3D loss
         # -------------------------------
@@ -165,7 +176,9 @@ class GeometryStereoLoss(nn.Module):
             )
 
             loss_3d = (X_pred - X_gt).abs()
-            loss_3d = loss_3d[valid.permute(0,2,3,1).expand_as(loss_3d)].mean()
+            valid_3d = valid_original.permute(0, 2, 3, 1).expand_as(loss_3d)  # [B,H,W,3]
+            loss_3d = loss_3d[valid_3d]
+            loss_3d = loss_3d.mean()
 
         # -------------------------------
         # Total loss

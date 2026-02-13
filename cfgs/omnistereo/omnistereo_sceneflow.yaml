@@ -18,6 +18,7 @@ DATA_CONFIG:
             - { NAME: ToTensor }
             # 🔥 geometry augmentation
             - { NAME: CameraGeometryAugmentation, F_RANGE: [700, 1400], BASELINE_RANGE: [0.1, 1.2]}
+            # - { NAME: CameraGeometryAugmentation, F_RANGE: [400, 800], BASELINE_RANGE: [0.1, 1.2]}
             - { NAME: NormalizeImage, MEAN: [ 0.485, 0.456, 0.406 ], STD: [ 0.229, 0.224, 0.225 ] }
         EVALUATING:
             - { NAME: RightTopPad, SIZE: [ 544, 960 ] }
@@ -30,7 +31,7 @@ MODEL:
     corr_levels: 2
     corr_radius: 4
     hidden_dims: [ 128, 128, 128 ]
-    low_memory: 0
+    low_memory: 1
     max_disp: 416
     mixed_precision: true
     n_downsample: 2
@@ -47,24 +48,24 @@ OPTIMIZATION:
     FREEZE_BN: false
     SYNC_BN: true
     AMP: true
-    BATCH_SIZE_PER_GPU: 2
+    BATCH_SIZE_PER_GPU: 1
     NUM_EPOCHS: 50
 
     OPTIMIZER:
         NAME: AdamW
-        LR: &lr 0.001
+        LR: &lr 0.0002
         WEIGHT_DECAY: 1.0e-05
         EPS: 1.0e-08
 
     SCHEDULER:
         NAME: OneCycleLR
         MAX_LR: *lr
-        PCT_START: 0.01
+        PCT_START: 0.05
         ON_EPOCH: False
 
     CLIP_GRAD:
         TYPE: value
-        CLIP_VALUE: 0.1
+        CLIP_VALUE: 1.0
 
 EVALUATOR:
     BATCH_SIZE_PER_GPU: 4

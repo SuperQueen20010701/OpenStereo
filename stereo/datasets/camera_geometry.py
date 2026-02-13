@@ -27,24 +27,17 @@ class CameraGeometryAugmentation:
           right: [H,W,3]
           disp:  [H,W]
         """
-        disp = sample['disp']
+        disp = sample['disp']  # disp in tensor
         # Convert to numpy if it's a Tensor
         if torch.is_tensor(disp):
-            disp = disp.cpu().numpy()
+            disp = disp.cpu().numpy() # disp in numpy array
         # Ensure disp is numpy array with float32 dtype
         disp = np.asarray(disp, dtype=np.float32)
         H, W = disp.shape
 
-        # ---------------------------
-        # 1. canonical depth
-        # ---------------------------
         depth = self.f0 * self.B0 / (disp + self.eps)
-        # Ensure depth is numpy array
         depth = np.asarray(depth, dtype=np.float32)
 
-        # ---------------------------
-        # 2. sample new camera
-        # ---------------------------
         f = np.random.uniform(*self.f_range)
         B = np.random.uniform(*self.baseline_range)
 
@@ -63,9 +56,6 @@ class CameraGeometryAugmentation:
         t_L = np.zeros(3, dtype=np.float32)
         t_R = np.array([B, 0, 0], dtype=np.float32)
 
-        # ---------------------------
-        # 3. reproject → new disparity
-        # ---------------------------
         xs, ys = np.meshgrid(
             np.arange(W),
             np.arange(H)

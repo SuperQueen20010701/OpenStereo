@@ -33,6 +33,7 @@ from core.utils.utils import InputPadder
 # from Utils import *
 import time,huggingface_hub
 
+logger = logging.getLogger("omnistereo")
 
 try:
     autocast = torch.cuda.amp.autocast
@@ -257,10 +258,10 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
             }
 
         B = len(image1)
-        image1 = normalize_image(image1)
-        image2 = normalize_image(image2)
+        # image1 = normalize_image(image1)
+        # image2 = normalize_image(image2)
         with autocast(enabled=self.args.mixed_precision):
-            out, vit_feat = self.feature(torch.cat([image1, image2], dim=0)) # depthanything feature
+            out, vit_feat = self.feature(torch.cat([image1, image2], dim=0))
             vit_feat = vit_feat[:B]
             features_left = [o[:B] for o in out]
             features_right = [o[B:] for o in out]
@@ -268,12 +269,24 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
             if self.args.use_camera_geometry:
                 _, _, h, w = features_left[0].shape
-                rays_L, _ = compute_rays_batch(h, w, cam_L["K"], cam_L["R"], cam_L["t"])
-                rays_R, _ = compute_rays_batch(h, w, cam_R["K"], cam_R["R"], cam_R["t"])
-                pixel_grid = make_pixel_grid(B, h, w, image1.device)
+                H_img, W_img = image1.shape[-2:]
 
-                #baseline embedding (VERY important)
-                # baseline = torch.norm(cam_R["t"] - cam_L["t"], dim=1, keepdim=True)  # [B,1]
+                sx = float(w) / float(W_img)
+                sy = float(h) / float(H_img)
+
+                def scale_camera_K(K):
+                    Ks = K.clone()
+                    Ks[:, 0, :] *= sx
+                    Ks[:, 1, :] *= sy
+                    return Ks
+
+                cam_L_sc = {**cam_L, "K": scale_camera_K(cam_L["K"])}
+                cam_R_sc = {**cam_R, "K": scale_camera_K(cam_R["K"])}
+
+                rays_L, _ = compute_rays_batch(h, w, cam_L_sc["K"], cam_L_sc["R"], cam_L_sc["t"])
+                rays_R, _ = compute_rays_batch(h, w, cam_R_sc["K"], cam_R_sc["R"], cam_R_sc["t"])
+                pixel_grid = make_pixel_grid(B, h, w, image1.device) # image pixel 
+
                 baseline = cam_L["baseline"]
                 baseline = baseline.view(B,1,1,1).expand(-1,1,h,w)
                 baseline_feat = self.baseline_encoder(baseline.detach())
@@ -284,7 +297,7 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 featL_geo = self.ray_encoder(
                     torch.cat([feat_L, rays_L], dim=1)
                 )
-                featL_geo = featL_geo + baseline_feat
+                featL_geo = featL_geo + baseline_feat # left camera feature + baseline feature = left camera feature
 
                 featR_geo = self.ray_encoder(
                     torch.cat([feat_R, rays_R], dim=1)
@@ -305,9 +318,12 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
             # Init disp from geometry encoding volume
             prob = F.softmax(self.classifier(comb_volume).squeeze(1), dim=1)  #(B, max_disp, H, W)
             if init_disp is None:
-              init_disp = disparity_regression(prob, self.args.max_disp//4)  # Weighted  sum of disparity
+              init_disp = disparity_regression(prob, self.args.max_disp//4) 
 
-            cnet_list = self.cnet(image1, vit_feat=vit_feat, num_layers=self.args.n_gru_layers)   #(1/4, 1/8, 1/16)
+            if torch.isnan(init_disp).sum().item() > 0 or torch.isinf(init_disp).sum().item() > 0:
+                logger.warning(f"[omnistereo] [forward] init_disp nan: {torch.isnan(init_disp).sum().item()}, inf: {torch.isinf(init_disp).sum().item()}")
+                
+            cnet_list = self.cnet(image1, vit_feat=vit_feat, num_layers=self.args.n_gru_layers)
             cnet_list = list(cnet_list)
             net_list = [torch.tanh(x[0]) for x in cnet_list]   # Hidden information
             inp_list = [torch.relu(x[1]) for x in cnet_list]   # Context information list of pyramid levels
@@ -315,11 +331,12 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
             att = [self.sam(x) for x in inp_list]
 
         geo_fn = Combined_Geo_Encoding_Volume(
-            features_left[0].float(),
-            features_right[0].float(),
-            comb_volume.float(),
+            features_left[0],
+            features_right[0],
+            comb_volume,
             num_levels=self.args.corr_levels,
-            dx=None if self.args.use_camera_geometry else self.dx
+            dx=self.dx,
+            use_camera_geometry=bool(self.args.use_camera_geometry),
         )
         b, c, h, w = features_left[0].shape
         if not self.args.use_camera_geometry:
@@ -327,7 +344,7 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 w, dtype=torch.float, device=init_disp.device
             ).reshape(1,1,w,1).repeat(b, h, 1, 1)
         disp = init_disp.float()
-        disp_preds = []
+        disp_preds = [] 
 
         # GRUs iterations to update disparity (1/4 resolution)
         for itr in range(iters):
@@ -336,8 +353,8 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 offset, _ = project_left_to_right_offset(
                     disp,
                     rays_L,
-                    cam_L,
-                    cam_R,
+                    cam_L_sc,
+                    cam_L_sc,
                     pixel_grid
                 )
                 coords_offset = offset.reshape(b*h*w, 1, 1, 2)
@@ -346,12 +363,9 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 geo_feat = geo_fn(disp, coords, low_memory=low_memory)
 
             if self.args.use_camera_geometry and itr == 0 and not test_mode:
-                print(
-                    "[camera-geo sanity] mean dx:",
-                    offset[..., 0].mean().item(),
-                    "mean |dy|:",
-                    offset[..., 1].abs().mean().item()
-                )
+                logger.info(f"[omnistereo] [forward] mean dx:{offset[..., 0].mean().item()}"
+                f"mean |dy|:{offset[..., 1].abs().mean().item()}")
+
             with autocast(enabled=self.args.mixed_precision):
               net_list, mask_feat_4, delta_disp = self.update_block(net_list, inp_list, geo_feat, disp, att)
 
@@ -360,20 +374,35 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 continue
 
             # upsample predictions
-            disp_up = self.upsample_disp(disp.float(), mask_feat_4.float(), stem_2x.float())
-            disp_preds.append(disp_up)
+            disp_up = self.upsample_disp(disp.float(), mask_feat_4, stem_2x)
+            disp_preds.append(disp_up if test_mode else disp_up.detach())
         
         if self.args.use_camera_geometry:
             fx = cam_L["K"][:,0,0].view(B,1,1,1)
             baseline = cam_L["baseline"].view(B,1,1,1)
-
-            depth_pred = (fx * baseline) / (disp_preds + 1e-6)
+            # use final prediction; intermediate list may be disabled to save memory
+            depth_pred = (fx * baseline) / (disp_up + 1e-6)
 
             # 3D points in world frame
             C_L = -torch.bmm(
                 cam_L["R"].transpose(1,2),
                 cam_L["t"].unsqueeze(-1)
             ).squeeze(-1)                        # [B,3]
+
+            _, _, H_depth, W_depth = depth_pred.shape
+            _, _, H_rays, W_rays = rays_L.shape
+            
+            if H_rays != H_depth or W_rays != W_depth:
+                rays_L = F.interpolate(
+                    rays_L, 
+                    size=(H_depth, W_depth), 
+                    mode='bilinear', 
+                    align_corners=False
+                )
+                # Renormalize to ensure unit vectors after interpolation
+                rays_L = rays_L / (torch.norm(rays_L, dim=1, keepdim=True) + 1e-8)
+            else:
+                rays_L = rays_L
 
             X = C_L.view(B,1,1,3) + \
                 depth_pred.permute(0,2,3,1) * rays_L.permute(0,2,3,1)

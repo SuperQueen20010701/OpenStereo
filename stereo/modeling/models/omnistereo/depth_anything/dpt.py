@@ -150,11 +150,17 @@ class DPT_DINOv2(nn.Module):
 
         assert encoder in ['vits', 'vitb', 'vitl']
 
-        # in case the Internet connection is not stable, please load the DINOv2 locally
-        # if localhub:
-        #     self.pretrained = torch.hub.load('torchhub/facebookresearch_dinov2_main', 'dinov2_{:}14'.format(encoder), source='local', pretrained=False)
-        # else:
-        self.pretrained = torch.hub.load('facebookresearch/dinov2', 'dinov2_{:}14'.format(encoder), pretrained=pretrained_dino)
+        dinov2_dir = os.path.join(code_dir, '../dinov2')
+        dinov2_dir = os.path.abspath(dinov2_dir)
+        
+        try:
+            # Try to load from local directory first
+            self.pretrained = torch.hub.load(dinov2_dir, 'dinov2_{:}14'.format(encoder), source='local', pretrained=pretrained_dino)
+        except Exception as e:
+            # Fallback to GitHub if local loading fails
+            print(f"Warning: Failed to load DINOv2 from local path {dinov2_dir}: {e}")
+            print("Attempting to load from GitHub...")
+            self.pretrained = torch.hub.load('facebookresearch/dinov2', 'dinov2_{:}14'.format(encoder), pretrained=pretrained_dino)
 
         dim = self.pretrained.blocks[0].attn.qkv.in_features
 
