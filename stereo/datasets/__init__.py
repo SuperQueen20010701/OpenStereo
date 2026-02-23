@@ -6,47 +6,9 @@ from torch.utils.data.distributed import DistributedSampler
 from .dataset_template import custom_collate
 
 from .sceneflow_dataset import SceneFlowDataset
-from .kitti_dataset import KittiDataset
-from .driving_dataset import DrivingDataset
-from .sceneflow_dataset import FlyingThings3DSubsetDataset
-from .middlebury_dataset import MiddleburyDataset
-from .eth3d_dataset import ETH3DDataset
-from .sintel_dataset import SintelDataset
-from .fallingthings_dataset import FallingThingsDataset
-from .instereo2k_dataset import InStereo2KDataset
-from .unrealstereo4k_dataset import UnrealStereo4KDataset
-from .crestereo_dataset import CREStereoDataset
-from .argoverse_dataset import ArgoverseDataset
-from .spring import SpringDataset
-from .tartanair_dataset import TartanAirDataset
-from .vkitti2_dataset import VirtualKitti2Dataset
-from .carla_dataset import CarlaDataset
-from .foundationstereo import FoundationStereoDataset
-from .dynamic_replica import DynamicReplicaDataset
-from .mono_dataset import MonoDataset
-from .realfill_dataset import RealfillDataset
 
 __all__ = {
-    'RealfillDataset': RealfillDataset,
-    'MonoDataset': MonoDataset,
     'SceneFlowDataset': SceneFlowDataset,
-    'KittiDataset': KittiDataset,
-    'DrivingDataset': DrivingDataset,
-    'FlyingThings3DSubsetDataset': FlyingThings3DSubsetDataset,
-    'MiddleburyDataset': MiddleburyDataset,
-    'ETH3DDataset': ETH3DDataset,
-    'SintelDataset': SintelDataset,
-    'FallingThingsDataset': FallingThingsDataset,
-    'InStereo2KDataset': InStereo2KDataset,
-    'UnrealStereo4KDataset': UnrealStereo4KDataset,
-    'CREStereoDataset': CREStereoDataset,
-    'ArgoverseDataset': ArgoverseDataset,
-    'SpringDataset': SpringDataset,
-    'TartanAirDataset': TartanAirDataset,
-    'VirtualKitti2Dataset': VirtualKitti2Dataset,
-    'FoundationStereoDataset': FoundationStereoDataset,
-    'DynamicReplicaDataset': DynamicReplicaDataset,
-    'CarlaDataset': CarlaDataset
 }
 
 

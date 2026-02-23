@@ -386,3 +386,141 @@ class NormalizeToMinusOneOne(object):
         sample['left'] = (2.0 * (img1 / 255.0) - 1.0).contiguous()
         sample['right'] = (2.0 * (img2 / 255.0) - 1.0).contiguous()
         return sample
+
+class CameraGeometryAugmentation:
+    def __init__(
+        self,
+        config
+    ):
+        self.config = config
+        self.f_range = getattr(self.config, 'F_RANGE', (700, 1400))
+        self.baseline_range = getattr(self.config, 'BASELINE_RANGE', (0.1, 1.2))
+        self.cx_jitter = getattr(self.config, 'CX_JITTER', 10.0)
+        self.cy_jitter = getattr(self.config, 'CY_JITTER', 10.0)
+        self.f0 = getattr(self.config, 'CANONICAL_F', 1050.0)
+        self.B0 = getattr(self.config, 'CANONICAL_BASELINE', 0.54)
+        self.eps = getattr(self.config, 'EPS', 1e-6)
+
+    def __call__(self, sample):
+        """
+        sample:
+          left:  [H,W,3]
+          right: [H,W,3]
+          disp:  [H,W]
+        """
+        disp = sample['disp']
+        if torch.is_tensor(disp):
+            disp = disp.cpu().numpy()
+        disp = np.asarray(disp, dtype=np.float32)
+
+        H, W = disp.shape
+
+        depth = self.f0 * self.B0 / (disp + self.eps)
+
+        f = np.random.uniform(*self.f_range)
+        B = np.random.uniform(*self.baseline_range)
+
+        cx = W / 2 + np.random.uniform(-self.cx_jitter, self.cx_jitter)
+        cy = H / 2 + np.random.uniform(-self.cy_jitter, self.cy_jitter)
+
+        K = np.array([
+            [f, 0, cx],
+            [0, f, cy],
+            [0, 0, 1]
+        ], dtype=np.float32)
+
+        # stereo: rectified
+        R_L = np.eye(3, dtype=np.float32)
+        R_R = np.eye(3, dtype=np.float32)
+        t_L = np.zeros(3, dtype=np.float32)
+        t_R = np.array([B, 0, 0], dtype=np.float32)
+
+        xs, ys = np.meshgrid(
+            np.arange(W),
+            np.arange(H)
+        )
+
+        X = (xs - cx) / f * depth
+        Y = (ys - cy) / f * depth
+        Z = depth
+
+        uL = f * X / Z + cx
+        uR = f * (X - B) / Z + cx
+
+        disp_new = uL - uR
+
+        disp_new = np.nan_to_num(disp_new, nan=0.0, posinf=0.0, neginf=0.0)
+        disp_new = np.clip(disp_new, 0.0, float(W))
+
+        # ---------------------------
+        # 4. write back
+        # ---------------------------
+        sample['disp'] = disp_new.astype(np.float32)
+        sample['camera'] = {
+            'K_L': K,
+            'K_R': K.copy(),
+            'R_L': R_L,
+            'R_R': R_R,
+            't_L': t_L,
+            't_R': t_R,
+            'baseline': np.array([B], dtype=np.float32)
+        }
+
+        return sample
+
+
+class CameraGeometryForEval:
+    def __init__(self, config):
+        self.config = config
+        # Use fixed values for evaluation (mean of training ranges)
+        self.f = getattr(self.config, 'F', 400.0)  # Default: mean of [200, 600]
+        self.baseline = getattr(self.config, 'BASELINE', 0.6)  # Default: mean of [0.2, 1.0]
+        self.cx_jitter = getattr(self.config, 'CX_JITTER', 0.0)  # No jitter for eval
+        self.cy_jitter = getattr(self.config, 'CY_JITTER', 0.0)  # No jitter for eval
+
+
+    def __call__(self, sample):
+        """
+        sample:
+          left:  tensor [C,H,W] (after ToTensor)
+          right: tensor [C,H,W] (after ToTensor)
+          disp:  tensor [H,W] (optional, not modified)
+        """
+        # Get image dimensions (after ToTensor, shape is [C, H, W])
+        if torch.is_tensor(sample['left']):
+            _, H, W = sample['left'].shape
+        else:
+            # Fallback for numpy arrays (shouldn't happen if called after ToTensor)
+            if len(sample['left'].shape) == 3:
+                H, W = sample['left'].shape[:2]
+            else:
+                H, W = sample['left'].shape[-2:]
+
+
+        f = self.f
+        B = self.baseline
+        
+        cx = W / 2.0
+        cy = H / 2.0
+        K = torch.tensor([
+            [f, 0, cx],
+            [0, f, cy],
+            [0, 0, 1]
+        ], dtype=torch.float32)
+
+        R_L = torch.eye(3, dtype=torch.float32)
+        R_R = torch.eye(3, dtype=torch.float32)
+        t_L = torch.zeros(3, dtype=torch.float32)
+        t_R = torch.tensor([B, 0, 0], dtype=torch.float32)
+
+        sample['camera'] = {
+            'K_L': K,
+            'K_R': K.clone(),
+            'R_L': R_L,
+            'R_R': R_R,
+            't_L': t_L,
+            't_R': t_R,
+            'baseline': torch.tensor([B], dtype=torch.float32)
+        }
+
+        return sample
