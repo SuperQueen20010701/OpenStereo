@@ -40,15 +40,19 @@ MODEL:
     vit_size: 'vitl'
     train_iters: 22
     valid_iters: 32
+    FREEZE_BACKBONE: false
     FIND_UNUSED_PARAMETERS: true
     CKPT: -1
     use_3d_loss: true
+    lambda_disp: 1.0
+    lambda_reproj: 0.6
+    lambda_3d: 0.2
     disp_threshold: 0.1
     use_camera_geometry: true
     PRETRAINED_MODEL: '/DATA/disk0/zhaobojun/foundationstereo_model/pretrained_models/23-51-11/model_best_bp2.pth'
 
 OPTIMIZATION:
-    FREEZE_BN: false
+    FREEZE_BN: true
     SYNC_BN: true
     AMP: true
     BATCH_SIZE_PER_GPU: 1
@@ -57,14 +61,15 @@ OPTIMIZATION:
 
     OPTIMIZER:
         NAME: AdamW
-        LR: &lr 2.0e-4
+        LR: &lr 0.00005
+        # LR: &lr 5e-4 
         WEIGHT_DECAY: 1.0e-05
         EPS: 1.0e-08
 
     SCHEDULER:
         NAME: OneCycleLR
         MAX_LR: *lr
-        PCT_START: 0.05
+        PCT_START: 0.2
         ON_EPOCH: False
 
     CLIP_GRAD:

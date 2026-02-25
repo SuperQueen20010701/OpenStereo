@@ -10,7 +10,7 @@
 
 ```
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-torchrun --nnodes=1 --nproc_per_node=4 --rdzv_backend=c10d --rdzv_endpoint=localhost:23456 tools/train.py --dist_mode --cfg_file cfgs/omnistereo/omnistereo_sceneflow.yaml
+torchrun --nnodes=1 --nproc_per_node=2 --rdzv_backend=c10d --rdzv_endpoint=localhost:23456 tools/train.py --dist_mode --cfg_file cfgs/omnistereo/omnistereo_sceneflow.yaml >output.txt 2>&1
 ```
 
 ## 3. Evaluation

@@ -56,7 +56,7 @@ class Combined_Geo_Encoding_Volume:
 
             if self.use_camera_geometry:
                 # coords is already (dx, dy)
-                offset_x = coords[..., 0:1]  # (B*H*W, 1, 1, 1)
+                offset_x = coords[..., 0:1]
                 disp_cam = -offset_x
                 x0 = dx + disp_cam / (2 ** i)
                 y0 = torch.zeros_like(x0)
@@ -75,7 +75,7 @@ class Combined_Geo_Encoding_Volume:
             init_corr = self.init_corr_pyramid[i]
 
             if self.use_camera_geometry:
-                u_L = self.pixel_grid_L[..., 0:1].reshape(b*h*w, 1, 1, 1)/(2**i)
+                u_L = self.pixel_grid_L[..., 0:1].reshape(b*h*w, 1, 1, 1)/(2**i)  # left image 
                 offset_x = coords[..., 0:1]  # (B*H*W, 1, 1, 1)
                 u_R = u_L + offset_x / (2**i)
                 x0 = dx + u_R
@@ -152,7 +152,7 @@ def compute_rays_batch(H, W, K, R, t):
 
 
 def project_left_to_right_offset(
-    disp, rays_L, cam_L, cam_R, pixel_grid_L, eps=1e-6, max_depth=500,disp_threshold=0.1
+    disp, rays_L, cam_L, cam_R, pixel_grid_L, eps=1e-6, max_depth=500,disp_threshold = 0.1
 ):
     """
     Core operator:
@@ -164,13 +164,14 @@ def project_left_to_right_offset(
     with torch.cuda.amp.autocast(enabled=False):
         fx = cam_L["K"][:, 0, 0].float().view(B, 1, 1, 1)
         baseline = cam_L["baseline"].float().view(B, 1, 1, 1)
-
+        # get min disp according to max_depth
         min_disp = (fx * baseline) / (max_depth + float(eps))
-
-        valid_mask = (disp.float() > min_disp) & torch.isfinite(disp.float())
-        disp_valid = torch.clamp(valid_mask, min=min_disp)
+        min_disp = torch.max(min_disp,torch.tensor(disp_threshold, device =min_disp.device))
+        valid_disp_mask = (disp.float() > min_disp) & torch.isfinite(disp.float())
+        disp_valid = torch.where(valid_disp_mask,disp.float(),min_disp)
 
         depth = (fx * baseline) / (disp_valid + float(eps))
+
         depth = torch.clamp(depth, min=0.0, max=float(max_depth))
 
         C_L = -torch.bmm(
@@ -189,7 +190,7 @@ def project_left_to_right_offset(
         proj = torch.bmm(
             cam_R["K"].float(),
             Xr
-        )
+        ) # proj shape :(B, 3, H*W)
 
         proj_x = proj[:, 0:1, :]
         proj_y = proj[:, 1:2, :]
@@ -207,11 +208,13 @@ def project_left_to_right_offset(
         in_box = in_box_u & in_box_v
 
         offset = coords_R - pixel_grid_L.float()
-        # 有效掩码 (disp + z + offset + proj right in bounding box)
-        valid_mask = valid_mask.squeeze(1) & valid_z_mask.view(B,H,W) & in_box.view(B,H,W) \
+        # valid mask
+        valid_mask = valid_disp_mask.squeeze(1) & valid_z_mask.view(B,H,W) & in_box.view(B,H,W) \
         & torch.isfinite(offset[..., 0]) & torch.isfinite(offset[..., 1])
-        offset = torch.where(valid_mask.unsqueeze(-1), offset, torch.zeros_like(offset))
 
+        offset = torch.where(valid_mask.unsqueeze(-1), offset, torch.zeros_like(offset))
+        valid_ratio = valid_mask.float().mean().item()
+        logger.info(f"[project_left_to_right_offset] valid offset ratio:{valid_ratio:.6f}")
         offset = offset.to(disp.dtype)
         depth = depth.to(disp.dtype)
 

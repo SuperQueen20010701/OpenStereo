@@ -468,7 +468,7 @@ class CameraGeometryAugmentation:
 
         return sample
 
-
+# 按照CameraGeometryAugmentation的思路实现CameraGeometryForEval用于评估
 class CameraGeometryForEval:
     def __init__(self, config):
         self.config = config

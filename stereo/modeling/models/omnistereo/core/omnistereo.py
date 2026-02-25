@@ -146,6 +146,11 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         self.cv_group = 8
         volume_dim = 28
         self.max_disp = args.max_disp
+
+        # parameter modify according to the training of the model part
+        self.lambda_disp=getattr(self.args,'lambda_disp', 1.0)
+        self.lambda_reproj=getattr(self.args,'lambda_reproj', 0.5)
+        self.lambda_3d=getattr(self.args,'lambda_3d', 0.1)
         
         self.disp_threshold = getattr(args, 'disp_threshold', 0.1)
 
@@ -216,11 +221,19 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
         self.criterion = GeometryStereoLoss(
             max_disp=self.max_disp,
-            lambda_disp=1.0,
-            lambda_reproj=0.5,
-            lambda_3d=0.1,
+            lambda_disp=self.lambda_disp,
+            lambda_reproj=self.lambda_reproj,
+            lambda_3d=self.lambda_3d,
             use_3d_loss=True
         )
+
+        # -- frozen to training the baseline_encoder and ray_encoder --
+        freeze_backbone = getattr(args, 'freeze_backbone', False) or getattr(args, 'FREEZE_BACKBONE', False)
+        if freeze_backbone:
+            for name, param in self.named_parameters():
+                if 'ray_encoder' not in name and 'baseline_encoder' not in name:
+                    param.requires_grad = False
+            logger.info("Freezing backbone parameters, only training ray_encoder and baseline_encoder")
 
 
     def upsample_disp(self, disp, mask_feat_4, stem_2x):
@@ -235,11 +248,10 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
     def forward(self, data):        
         """ Estimate disparity between pair of frames """
-        low_memory = False
         init_disp = None
         test_mode = not self.training
         iters = self.args.valid_iters if test_mode else self.args.train_iters
-        low_memory = low_memory or (self.args.get('low_memory', False))
+        low_memory = self.args.get('low_memory', False)
 
         image1 = data["left"]
         image2 = data["right"]
@@ -256,7 +268,7 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 "K": camera["K_R"].to(image1.device),
                 "R": camera["R_R"].to(image1.device),
                 "t": camera["t_R"].to(image1.device)
-            }
+            } # "t" shape :(1, 3)
 
         B = len(image1)
         # image1 = normalize_image(image1)
@@ -290,23 +302,21 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                 rays_L, _ = compute_rays_batch(h, w, cam_L_sc["K"], cam_L_sc["R"], cam_L_sc["t"])
                 rays_R, _ = compute_rays_batch(h, w, cam_R_sc["K"], cam_R_sc["R"], cam_R_sc["t"])
                 pixel_grid = make_pixel_grid(B, h, w, image1.device)
-                # norm the ray vetor
+
                 rays_L_norm = rays_L / torch.norm(rays_L, dim=1, keepdim=True)
                 rays_R_norm = rays_R / torch.norm(rays_R, dim=1, keepdim=True)
                 
                 baseline = cam_L["baseline"]
                 baseline = baseline.view(B,1,1,1).expand(-1,1,h,w)
-                baseline_feat = self.baseline_encoder(baseline.detach())
+                baseline_feat = self.baseline_encoder(baseline.detach())  #baseline_encoder shape: (1, 224, 80, 184)
 
                 feat_L = features_left[0]
                 feat_R = features_right[0]
 
-                # encoder the feature geometry and direction feature 
                 featL_geo = self.ray_encoder(
                     torch.cat([feat_L, rays_L_norm], dim=1)
-                )
+                ) # ray_encoder shape :(1, 224, 80, 184)
                 featL_geo = featL_geo + baseline_feat
-
                 featR_geo = self.ray_encoder(
                     torch.cat([feat_R, rays_R_norm], dim=1)
                 )
@@ -409,10 +419,6 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                     mode='bilinear', 
                     align_corners=False
                 )
-                # Renormalize to ensure unit vectors after interpolation
-                rays_L = rays_L / (torch.norm(rays_L, dim=1, keepdim=True) + 1e-8)
-            else:
-                rays_L = rays_L_norm
             X = (C_L + depth_pred * rays_L).permute(0,2,3,1)
         else:
             depth_pred = None
@@ -454,17 +460,7 @@ class OmniStereo(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     
     def get_loss(self, model_pred, input_data):
         loss, loss_info = self.criterion(model_pred, input_data)
-        # Convert loss_info keys from 'scalar/loss_*' to 'scalar/train/loss_*' format
-        # to match tensorboard logging convention in trainer
-        renamed_loss_info = {}
-        for k, v in loss_info.items():
-            if k.startswith('scalar/loss_'):
-                # Convert 'scalar/loss_*' to 'scalar/train/loss_*'
-                new_key = k.replace('scalar/loss_', 'scalar/train/loss_')
-                renamed_loss_info[new_key] = v
-            elif k.startswith('scalar/train/'):
-                renamed_loss_info[k] = v
-            else:
-                # Keep other keys as is
-                renamed_loss_info[k] = v
-        return loss, renamed_loss_info
+        loss_info = {'scalar/train/total_loss': loss.item(),
+                     'scalar/train/loss_reproj': loss_info['scalar/loss_reproj'],
+                     'scalar/train/loss_3d': loss_info['scalar/loss_3d']}
+        return loss, loss_info

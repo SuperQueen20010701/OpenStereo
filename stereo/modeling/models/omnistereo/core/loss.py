@@ -107,12 +107,19 @@ class GeometryStereoLoss(nn.Module):
                 model_pred["init_disp"], scale_factor=4,
                 mode="bilinear", align_corners=True
             ) * 4
-
-            loss_disp = F.smooth_l1_loss(
-                    disp_init[valid_disp_gt_mask],
-                    disp_gt[valid_disp_gt_mask],
-                    reduction="mean"
-            )
+            # 判断disp gt是否有效
+            if valid_disp_gt_mask.any():
+                loss_disp = F.smooth_l1_loss(
+                        disp_init[valid_disp_gt_mask],
+                        disp_gt[valid_disp_gt_mask],
+                        reduction="mean"
+                )
+            else:
+                loss_disp = F.smooth_l1_loss(
+                        disp_init,
+                        disp_gt,
+                        reduction="mean"
+                ) * 0.0
         # -------------------------------
         # Camera geometry
         # -------------------------------
@@ -139,7 +146,6 @@ class GeometryStereoLoss(nn.Module):
         # -------------------------------
         # Reprojection loss (MAIN)
         # -------------------------------
-        # Get valid_mask from projection function (consistent with omnistereo forward)
         offset_pred, _, valid_mask_pred = project_left_to_right_offset(
             disp_pred, rays_L, cam_L, cam_R, pixel_grid
         )
@@ -148,17 +154,15 @@ class GeometryStereoLoss(nn.Module):
             disp_gt, rays_L, cam_L, cam_R, pixel_grid
         )
           
-        mask_valid_reproj = valid_mask_pred & valid_mask_gt & valid_disp_gt_mask.squeeze(1) # [B,H,W]
+        mask_valid_reproj = valid_mask_pred & valid_mask_gt # [B,H,W]
         
-        # Log how many pixels were filtered out (save original count before modifying valid_reproj)
         n_original = valid_mask_gt.sum().item()
         n_reproj_original = mask_valid_reproj.sum().item()
         if logger.isEnabledFor(logging.INFO) and n_original > 0:
             ratio = n_reproj_original / n_original
             logger.info(
-                f"({ratio*100:.1f}%) valid projections ratio")
+                f"({ratio*100:.1f}%) -> (valid reprojection / valid gt)")
         
-        # Apply stronger mask to reprojection loss
         mask_valid_reproj = mask_valid_reproj.unsqueeze(-1)  # [B,H,W,1]
         
         diff = (offset_pred - offset_gt).float()
@@ -166,9 +170,12 @@ class GeometryStereoLoss(nn.Module):
         reproj_loss = F.smooth_l1_loss(diff, torch.zeros_like(diff), reduction="none", beta=1.0)  # [B,H,W,2]
 
         # Extract valid reprojection loss values
-        valid_reproj_expanded = mask_valid_reproj.expand_as(reproj_loss)  # [B,H,W,2]
-        reproj_loss = reproj_loss[valid_reproj_expanded]
-        loss_reproj = reproj_loss.mean() if reproj_loss.any() else (diff.sum() * 0)
+        valid_reproj_loss_mask = mask_valid_reproj.expand_as(reproj_loss)  # [B,H,W,2]
+        if valid_reproj_loss_mask.any():
+            reproj_loss = reproj_loss[valid_reproj_loss_mask]
+            loss_reproj = reproj_loss.mean()
+        else:
+            loss_reproj = (reproj_loss.mean() * 0.0)
         
         # -------------------------------
         # Optional 3D loss
@@ -182,9 +189,12 @@ class GeometryStereoLoss(nn.Module):
                 disp_gt, rays_L, cam_L
             )
             
-            loss_3d_map = torch.abs(X_pred - X_gt)
-            mask_3d = valid_disp_gt_mask.permute(0, 2, 3, 1).expand_as(loss_3d_map)
-            loss_3d = loss_3d_map[mask_3d].mean() if mask_3d.any() else (X_pred.sum() * 0)
+            loss_3d = torch.abs(X_pred - X_gt)
+            mask_3d = valid_disp_gt_mask.permute(0, 2, 3, 1).expand_as(loss_3d)
+            if mask_3d.any():
+                loss_3d = loss_3d[mask_3d].mean()
+            else:
+                loss_3d = (loss_3d.mean() * 0.0)
         # -------------------------------
         # Total loss
         # -------------------------------
