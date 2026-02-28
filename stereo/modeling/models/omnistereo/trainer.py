@@ -31,16 +31,19 @@ class Trainer(TrainerTemplate):
         super().__init__(args, cfgs, local_rank, global_rank, logger, tb_writer, model)
 
         # ---- precision config ----
-        # AMP: True/False
         self.amp_enabled = bool(self.cfgs.OPTIMIZATION.AMP)
-        # AMP_DTYPE: "bf16" / "fp16" (default fp16)
         self.amp_dtype_cfg = str(self.cfgs.OPTIMIZATION.get("AMP_DTYPE", "fp16")).lower()
         self.use_bf16 = self.amp_enabled and (self.amp_dtype_cfg in ["bf16", "bfloat16"])
         self.use_fp16 = self.amp_enabled and (not self.use_bf16)
+        self.stage_flag = -1
+        self.stage_start_iter = 0 # 用于计算平滑过渡
         
-        # no scaler for bf16, only for fp16
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_fp16)
-     
+
+        #  逐层解冻逻辑 平滑过渡
+        for param in self.model.parameters():
+            param.requires_grad = True
+
     def build_optimizer_and_scheduler(self):
         if self.cfgs.OPTIMIZATION.OPTIMIZER.NAME == 'Lamb':
             optimizer_cls = Lamb
@@ -48,11 +51,8 @@ class Trainer(TrainerTemplate):
             optimizer_cls = getattr(torch.optim, self.cfgs.OPTIMIZATION.OPTIMIZER.NAME)
         valid_arg = common_utils.get_valid_args(optimizer_cls, self.cfgs.OPTIMIZATION.OPTIMIZER, ['name'])
 
-        # --- 这里加入了解冻逻辑来逐层解冻foundationstereo的模型参数
-        base_lr = self.cfgs.OPTIMIZATION.OPTIMIZER.LR  # 基础学习率
-        new_layer_param = []
-        backbone_param = []
-        backend_param = []
+        base_lr = self.cfgs.OPTIMIZATION.OPTIMIZER.LR 
+        new_layer_param, backbone_param, backend_param = [], [], []
 
         for name , param in self.model.named_parameters():
             if 'ray_encoder' in name or 'baseline_encoder' in name:
@@ -63,9 +63,9 @@ class Trainer(TrainerTemplate):
                 backend_param.append(param)
 
         param_groups = [
-            {'params': new_layer_param, 'lr': base_lr}, # ray_encoder and baseline_encoder
-            {'params': backbone_param, 'lr': base_lr * 4}, # backbone feature 
-            {'params': backend_param, 'lr': base_lr * 3}, # gru and cost volume 
+            {'params': new_layer_param, 'lr': base_lr * 2.0, 'group_name': 'new_layers', 'base_lr_ratio': 2.0}, 
+            {'params': backend_param, 'lr': base_lr, 'group_name': 'backend', 'base_lr_ratio': 1.0}, 
+            {'params': backbone_param, 'lr': base_lr * 0.1, 'group_name': 'backbone', 'base_lr_ratio': 0.1},  # backbone执行微调
         ]
 
         optimizer = optimizer_cls(params=param_groups, **valid_arg)
@@ -75,57 +75,89 @@ class Trainer(TrainerTemplate):
         self.cfgs.OPTIMIZATION.SCHEDULER.TOTAL_STEPS = effective_optimizer_steps
         scheduler_cls = getattr(torch.optim.lr_scheduler, self.cfgs.OPTIMIZATION.SCHEDULER.NAME)
         valid_arg = common_utils.get_valid_args(scheduler_cls, self.cfgs.OPTIMIZATION.SCHEDULER, ['name', 'on_epoch'])
+        
         if self.cfgs.OPTIMIZATION.SCHEDULER.NAME == "CosineAnnealingLR":
             valid_arg["T_max"] = effective_optimizer_steps
+            
         scheduler = scheduler_cls(optimizer, **valid_arg)
-
         return optimizer, scheduler
 
-    def update_model_status(self,current_epoch):
-        # -- 逐层解冻 model parameter 
-        model = self.model.module if self.args.dist_mode else self.model
-        loss_func = model.criterion
+    def update_model_status(self,current_epoch , total_iter=None):
+        loss_func = self.model.module.criterion if self.args.dist_mode else self.model.criterion
+        # -- 执行学习率平滑过渡每个解冻的策略
+        STAGE_1_END = 8
+        STAGE_2_END = 20
+        STAGE_3_END = 40
 
-        if current_epoch < 10 :
-            for name, param in self.model.named_parameters():
-                if 'ray_encoder' in name or 'baseline_encoder' in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-            # loss parameter 
-            loss_func.lambda_disp = 1.0
-            loss_func.lambda_reproj = 0.4
-            loss_func.lambda_3d = 0.05
-            stage_msg = "STAGE 1: 冻结模型仅训练新模块 (ray_enc & baseline_enc)"
-        elif (current_epoch >= 10) and (current_epoch < 35):
-            for name, param in self.model.named_parameters():
-                if any(k in name for k in ['feature', 'cnet', 'stem_2', 'stem_4']):
-                    param.requires_grad = False
-                else:
-                    param.requires_grad = True # 解冻后端模块
-
-            # 调整loss方面的学习率策略
-            loss_func.lambda_disp = 1.0
-            loss_func.lambda_reproj = 0.6
-            loss_func.lambda_3d = 0.1
-            stage_msg = "STAGE 2: 解冻后端模块 (GRU / CostAgg)"
+        # -- 1.模型初始化训练 ray_encoder 以及 baseline_encoder阶段
+        if current_epoch < STAGE_1_END:
+            new_stage = 1
+        elif current_epoch < STAGE_2_END:
+             new_stage = 2
+        elif current_epoch < STAGE_3_END:
+             new_stage = 3
         else:
-            for param in self.model.parameters():
-                param.requires_grad = True
-            loss_func.lambda_disp = 1.0
-            loss_func.lambda_reproj = 0.8
-            loss_func.lambda_3d = 0.2
-            stage_msg = "STAGE 3: 全局参数微调 (Backbone 采用 0.1x LR)"
-        # log the dynamic change of the loss weight in rank 0
-        if self.local_rank == 0:
-            self.logger.info(
-                f"\n{'='*60}\n"
-                f"[Epoch {current_epoch}] {stage_msg}\n"
-                f"Loss weights - lambda_disp: {loss_func.lambda_disp}, "
-                f"lambda_reproj: {loss_func.lambda_reproj}, "
-                f"lambda_3d: {loss_func.lambda_3d}\n"
-                f"{'='*60}\n"
-            )
+             new_stage = 4
+
+        if self.stage_flag != new_stage:
+            self.stage_flag = new_stage
+            self.stage_start_iter = total_iter
+
+            if self.local_rank == 0:
+                self.logger.info(f"At Stage {self.stage_flag},Epoch {current_epoch}")
+
+        curr_iter = total_iter - self.stage_start_iter
+        # 预热阶段显示1.5 epoch的平滑策略
+        warmup_iters = 1.5 * len(self.train_loader) 
+        decline_alpha = min(1.0 , curr_iter / warmup_iters)if self.stage_flag > 1 else 1.0
+
+        # 定义各个阶段的权重信息
+        stage_weights = {
+            1: {'disp': 0.2, 'reproj': 0.0, '3d': 0.0},
+            2: {'disp': 0.4, 'reproj': 0.05, '3d': 0.01},
+            3: {'disp': 0.6, 'reproj': 0.1, '3d': 0.05},
+            4: {'disp': 0.8, 'reproj': 0.2, '3d': 0.1},
+        }
+
+        # unfrozen 阶段 平滑过渡权重
+        if self.stage_flag > 1 and decline_alpha < 1.0:# 后续阶段进行平滑下降过渡
+            prev_stage = self.stage_flag - 1
+            loss_func.lambda_disp = stage_weights[prev_stage]['disp'] * (1-decline_alpha) + stage_weights[self.stage_flag]['disp'] * decline_alpha
+            loss_func.lambda_reproj = stage_weights[prev_stage]['reproj'] * (1-decline_alpha) + stage_weights[self.stage_flag]['reproj'] * decline_alpha
+            loss_func.lambda_3d = stage_weights[prev_stage]['3d'] * (1-decline_alpha) + stage_weights[self.stage_flag]['3d'] * decline_alpha
+        else: # 在stage 1 直接用
+            loss_func.lambda_disp = stage_weights[self.stage_flag]['disp']
+            loss_func.lambda_reproj = stage_weights[self.stage_flag]['reproj']
+            loss_func.lambda_3d = stage_weights[self.stage_flag]['3d']
+
+        
+        curr_lr  = self.scheduler.get_last_lr()[0]
+
+        for param_group in self.optimizer.param_groups:
+            group_name = param_group.get('group_name', 'default')
+            base_lr_ratio = param_group.get('base_lr_ratio', 1.0)
+            target_lr = curr_lr * base_lr_ratio # scale learn rate 
+
+            if group_name == 'new_layers':
+                final_lr = target_lr 
+            elif group_name == 'backend':
+                if self.stage_flag == 1:
+                    final_lr = 0.0
+                elif self.stage_flag == 2:
+                    final_lr = target_lr * decline_alpha
+                else:
+                    final_lr = target_lr
+            elif group_name == 'backbone':
+                if self.stage_flag <= 2:
+                    final_lr = 0.0
+                elif self.stage_flag == 3:
+                    final_lr = target_lr * decline_alpha
+                else:
+                    final_lr = target_lr
+            
+            # 平滑衰减lr 最终得到整个组的group lr 用于学习训练
+            param_group['lr'] = final_lr
+
         
     def build_warmup(self):
         effective_step_per_epoch = len(self.train_loader) // self.accumulation_steps
@@ -148,10 +180,6 @@ class Trainer(TrainerTemplate):
         return warmup_scheduler
 
     def train_one_epoch(self, current_epoch, tbar):
-
-        # -- 预先解冻模型 逐层解冻策略
-        self.update_model_status(current_epoch)
-        
         start_epoch = self.last_epoch + 1
         logger_iter_interval = self.cfgs.TRAINER.LOGGER_ITER_INTERVAL
 
@@ -173,7 +201,8 @@ class Trainer(TrainerTemplate):
             total_iter = current_epoch * len(self.train_loader) + i
             if total_iter >= self.max_iter:
                 break
-            
+
+            self.update_model_status(current_epoch, total_iter)
             lr = self.optimizer.param_groups[0]['lr']
             start_timer = time.time()
             data = next(train_loader_iter)

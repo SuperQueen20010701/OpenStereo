@@ -55,21 +55,22 @@ OPTIMIZATION:
     FREEZE_BN: true
     SYNC_BN: true
     AMP: true
+    AMP_DTYPE: bf16
     BATCH_SIZE_PER_GPU: 1
     GRADIENT_ACCUMULATION_STEPS: 8
-    NUM_EPOCHS: 50
+    NUM_EPOCHS: 65
 
     OPTIMIZER:
         NAME: AdamW
-        LR: &lr 0.00005
+        LR: &lr 0.0001
         # LR: &lr 5e-4 
-        WEIGHT_DECAY: 1.0e-05
+        WEIGHT_DECAY: 1.0e-04
         EPS: 1.0e-08
 
     SCHEDULER:
-        NAME: OneCycleLR
-        MAX_LR: *lr
-        PCT_START: 0.2
+        NAME: CosineAnnealingLR # 执行分段解冻策略用的学习率调度器
+        # MAX_LR: *lr
+        # PCT_START: 0.1
         ON_EPOCH: False
 
     CLIP_GRAD:
